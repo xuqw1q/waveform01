@@ -1,0 +1,264 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Mic Waveform · Real-time Waveform/Spectrum · Adjustable Time Window (Web)</title>
+  <!-- Plotly CDN -->
+  <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+  <style>
+    :root { --bg:#0f172a; --panel:#111827; --text:#e5e7eb; --muted:#94a3b8; --accent:#22d3ee; }
+    html, body { height:100%; }
+    body {
+      margin:0; background:var(--bg); color:var(--text); font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji";
+    }
+    .wrap { max-width:1100px; margin:0 auto; padding:18px; }
+    .title { font-size:20px; font-weight:700; letter-spacing:0.2px; display:flex; align-items:center; gap:10px; }
+    .title small { color:var(--muted); font-weight:500; }
+    .bar {
+      margin-top:14px; background:linear-gradient(180deg,rgba(255,255,255,0.04),rgba(255,255,255,0.02));
+      border:1px solid rgba(255,255,255,0.08); border-radius:16px; padding:12px 14px;
+      display:flex; align-items:center; gap:14px; flex-wrap:wrap;
+      box-shadow: 0 10px 24px rgba(0,0,0,0.25), inset 0 1px 0 rgba(255,255,255,0.04);
+    }
+    label { color:var(--muted); font-size:14px; }
+    select, button {
+      background:#0b1324; color:var(--text); border:1px solid rgba(255,255,255,0.12);
+      border-radius:10px; padding:8px 10px; font-size:14px;
+    }
+    button.primary { background:linear-gradient(180deg,#0ea5e9,#06b6d4); border:none; color:white; font-weight:600; }
+    button:disabled { opacity:.6; cursor:not-allowed; }
+    .grid { margin-top:16px; display:grid; grid-template-columns:1fr; gap:16px; }
+    @media (min-width: 900px) { .grid { grid-template-columns:1fr 1fr; } }
+    .card {
+      background:linear-gradient(180deg,rgba(255,255,255,0.04),rgba(255,255,255,0.02));
+      border:1px solid rgba(255,255,255,0.08); border-radius:16px; padding:10px;
+      box-shadow: 0 10px 24px rgba(0,0,0,0.25), inset 0 1px 0 rgba(255,255,255,0.04);
+    }
+    .meta { margin-top:8px; font-size:12px; color:var(--muted); }
+    .footer { margin-top:16px; color:var(--muted); font-size:12px; }
+    .warn { color:#fca5a5; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="title">🎤 Mic Waveform <small>Real-time Waveform / Spectrum · Adjustable Time Window (Web)</small></div>
+
+    <div class="bar">
+      <label>Time Window:</label>
+      <select id="windowSel">
+        <option value="0.020">20 ms</option>
+        <option value="0.050" selected>50 ms</option>
+        <option value="0.100">100 ms</option>
+        <option value="0.200">200 ms</option>
+        <option value="0.500">500 ms</option>
+        <option value="1.0">1 s</option>
+        <option value="2.0">2 s</option>
+        <option value="5.0">5 s</option>
+      </select>
+      <button id="btnStart" class="primary">Start</button>
+      <button id="btnStop" disabled>Stop</button>
+      <span id="status" class="meta">Not Started</span>
+    </div>
+
+    <div class="grid">
+      <div class="card">
+        <div id="timePlot" style="width:100%;height:360px"></div>
+      </div>
+      <div class="card">
+        <div id="freqPlot" style="width:100%;height:360px"></div>
+      </div>
+    </div>
+
+    <div class="footer">
+      Note: Runs fully in the browser using <code>Web Audio API</code> for microphone input and Plotly for plotting.  
+      Microphone access requires an HTTPS environment (e.g., GitHub Pages).  
+      If you see no signal or spectrum, please check browser permissions or ensure your microphone (e.g., headset mic) is active.
+    </div>
+
+    <div class="meta" id="info"></div>
+  </div>
+
+<script>
+  // ===== Helpers =====
+  function nextPow2(n){ return n<=1?1:1<< (Math.ceil(Math.log2(n))); }
+
+  // ===== State =====
+  let audioCtx, analyser, micSource, mediaStream;
+  let running = false;
+  let sampleRate = 48000;
+  let ring = new Float32Array(48000 * 0.05); // default 50 ms
+  let writePtr = 0, filled = false;
+
+  function setWindowSec(sec){
+    const newN = Math.max(1, Math.floor(sec * sampleRate));
+    const old = getOrderedBuffer();
+    const keep = old.slice(Math.max(0, old.length - newN));
+    ring = new Float32Array(newN);
+    ring.set(keep, newN - keep.length);
+    // 修正：写指针 = 已保留数据长度；是否填满由 keep 长度决定
+    writePtr = keep.length;
+    filled = (keep.length === newN);
+  }
+
+  function writeRing(data){
+    const N = ring.length;
+    let n = data.length;
+    let end = writePtr + n;
+    if(end < N){
+      ring.set(data, writePtr);
+      writePtr = end;
+    } else {
+      const part1 = N - writePtr;
+      ring.set(data.subarray(0, part1), writePtr);
+      ring.set(data.subarray(part1), 0);
+      writePtr = end % N; filled = true;
+    }
+  }
+
+  function getOrderedBuffer(){
+    const N = ring.length;
+    if(!filled){ return ring.slice(0, writePtr); }
+    const out = new Float32Array(N);
+    out.set(ring.subarray(writePtr));
+    out.set(ring.subarray(0, writePtr), N - writePtr);
+    return out;
+  }
+
+  // ===== Plot setup =====
+  function initPlots(){
+    const timeLayout = {
+      margin:{l:50,r:15,t:20,b:40}, paper_bgcolor:'rgba(0,0,0,0)', plot_bgcolor:'rgba(0,0,0,0)',
+      xaxis:{ title:'Time (s)', zeroline:false, gridcolor:'rgba(255,255,255,0.1)' },
+      yaxis:{ title:'Amplitude', zeroline:false, gridcolor:'rgba(255,255,255,0.1)', range:[-1,1] },
+    };
+    const freqLayout = {
+      margin:{l:60,r:15,t:20,b:40}, paper_bgcolor:'rgba(0,0,0,0)', plot_bgcolor:'rgba(0,0,0,0)',
+      xaxis:{ title:'Frequency (Hz)', zeroline:false, gridcolor:'rgba(255,255,255,0.1)' },
+      yaxis:{ title:'Magnitude (dB)', zeroline:false, gridcolor:'rgba(255,255,255,0.1)' },
+    };
+
+    Plotly.newPlot('timePlot', [{x:[0,1], y:[0,0], mode:'lines'}], timeLayout, {displayModeBar:false});
+    Plotly.newPlot('freqPlot', [{x:[0,1], y:[0,0], mode:'lines'}], freqLayout, {displayModeBar:false});
+  }
+
+  function ensurePlotsReady(){
+    if(window.Plotly){ initPlots(); return; }
+    window.addEventListener('load', ()=>{ initPlots(); });
+  }
+
+  ensurePlotsReady();
+
+  function updateTimePlot(){
+    const y = getOrderedBuffer();
+    const len = y.length;
+    if(len < 2) return;
+    const x = new Float32Array(len);
+    for(let i=0;i<len;i++){ x[i] = (i - len) / sampleRate; } // [-sec, 0)
+    Plotly.update('timePlot', {x:[Array.from(x)], y:[Array.from(y)]});
+    const sec = len / sampleRate;
+    Plotly.relayout('timePlot', {'xaxis.range':[ -sec, 0 ]});
+  }
+
+  function updateFreqPlot(){
+    if(!analyser) return;
+    const buf = new Float32Array(analyser.frequencyBinCount);
+    analyser.getFloatFrequencyData(buf); // dB values
+
+    // X axis (frequency)
+    const nyquist = sampleRate / 2;
+    const freqs = new Float32Array(buf.length);
+    const step = nyquist / (buf.length - 1);
+    for(let i=0;i<freqs.length;i++) freqs[i] = i * step;
+
+    // Limit display to 6 kHz for readability
+    const limit = 6000; // Hz
+    let limitIdx = Math.min(buf.length, Math.floor(limit/step));
+    if(limitIdx < 8) limitIdx = buf.length;
+
+    Plotly.update('freqPlot', {
+      x:[Array.from(freqs.slice(0, limitIdx))],
+      y:[Array.from(buf.slice(0, limitIdx))]
+    });
+    Plotly.relayout('freqPlot', {'xaxis.range':[0, Math.min(nyquist, limit)]});
+  }
+
+  // ===== Audio pipeline (RAF 拉流版) =====
+  async function start(){
+    if(running) return;
+    try{
+      mediaStream = await navigator.mediaDevices.getUserMedia({audio:true});
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      await audioCtx.resume();
+      sampleRate = audioCtx.sampleRate;
+
+      // 窗口大小需基于当前采样率初始化
+      const winSec = parseFloat(document.getElementById('windowSel').value);
+      setWindowSec(winSec);
+
+      micSource = audioCtx.createMediaStreamSource(mediaStream);
+      analyser = audioCtx.createAnalyser();
+      analyser.fftSize = 16384;                // 大 FFT 以获得更细频率分辨率
+      analyser.smoothingTimeConstant = 0.6;    // 频谱平滑
+
+      // 连接：只需 mic -> analyser
+      micSource.connect(analyser);
+
+      running = true;
+      document.getElementById('btnStart').disabled = true;
+      document.getElementById('btnStop').disabled = false;
+      setStatus(`Sample Rate: ${sampleRate} Hz | FFT: ${analyser.fftSize} | Window: ${ring.length/sampleRate}s`);
+
+      // —— 动画循环：每帧拉取时域数据，写入 ring，并刷新两张图 —— 
+      const loop = ()=>{
+        if(!running) return;
+
+        // 拉取时域 PCM
+        const td = new Float32Array(analyser.fftSize);
+        if (analyser.getFloatTimeDomainData) {
+          analyser.getFloatTimeDomainData(td);
+        } else {
+          const u8 = new Uint8Array(analyser.fftSize);
+          analyser.getByteTimeDomainData(u8);
+          for (let i = 0; i < u8.length; i++) td[i] = (u8[i]-128)/128;
+        }
+        writeRing(td);
+
+        updateTimePlot();
+        updateFreqPlot();
+        requestAnimationFrame(loop);
+      };
+      loop();
+    }catch(err){
+      setStatus('Microphone access failed: ' + err.message, true);
+      console.error(err);
+    }
+  }
+
+  function stop(){
+    running = false;
+    try{ if(mediaStream){ mediaStream.getTracks().forEach(t=>t.stop()); } }catch{}
+    try{ if(audioCtx){ audioCtx.close(); } }catch{}
+    mediaStream = null; audioCtx = null; analyser = null; micSource = null;
+    document.getElementById('btnStart').disabled = false;
+    document.getElementById('btnStop').disabled = true;
+    setStatus('Stopped');
+  }
+
+  function setStatus(msg, warn=false){
+    const el = document.getElementById('status');
+    el.textContent = msg; el.className = 'meta' + (warn? ' warn':'' );
+    document.getElementById('info').textContent = msg;
+  }
+
+  // ===== UI wires =====
+  document.getElementById('btnStart').addEventListener('click', start);
+  document.getElementById('btnStop').addEventListener('click', stop);
+  document.getElementById('windowSel').addEventListener('change', (e)=>{
+    const sec = parseFloat(e.target.value);
+    setWindowSec(sec);
+    if(running) setStatus(`Sample Rate: ${sampleRate} Hz | FFT: ${analyser?analyser.fftSize:'-'} | Window: ${sec}s`);
+  });
+</script>
+</body>
+</html>
