@@ -4,37 +4,22 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Mic Waveform · Real-time Waveform/Spectrum · Adjustable Time Window (Web)</title>
-  <!-- Plotly CDN -->
   <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
   <style>
     :root { --bg:#0f172a; --panel:#111827; --text:#e5e7eb; --muted:#94a3b8; --accent:#22d3ee; }
     html, body { height:100%; }
-    body {
-      margin:0; background:var(--bg); color:var(--text); font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji";
-    }
+    body { margin:0; background:var(--bg); color:var(--text); font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,"Apple Color Emoji","Segoe UI Emoji"; }
     .wrap { max-width:1100px; margin:0 auto; padding:18px; }
     .title { font-size:20px; font-weight:700; letter-spacing:0.2px; display:flex; align-items:center; gap:10px; }
     .title small { color:var(--muted); font-weight:500; }
-    .bar {
-      margin-top:14px; background:linear-gradient(180deg,rgba(255,255,255,0.04),rgba(255,255,255,0.02));
-      border:1px solid rgba(255,255,255,0.08); border-radius:16px; padding:12px 14px;
-      display:flex; align-items:center; gap:14px; flex-wrap:wrap;
-      box-shadow: 0 10px 24px rgba(0,0,0,0.25), inset 0 1px 0 rgba(255,255,255,0.04);
-    }
+    .bar { margin-top:14px; background:linear-gradient(180deg,rgba(255,255,255,0.04),rgba(255,255,255,0.02)); border:1px solid rgba(255,255,255,0.08); border-radius:16px; padding:12px 14px; display:flex; align-items:center; gap:14px; flex-wrap:wrap; box-shadow:0 10px 24px rgba(0,0,0,0.25), inset 0 1px 0 rgba(255,255,255,0.04); }
     label { color:var(--muted); font-size:14px; }
-    select, button {
-      background:#0b1324; color:var(--text); border:1px solid rgba(255,255,255,0.12);
-      border-radius:10px; padding:8px 10px; font-size:14px;
-    }
+    select, button { background:#0b1324; color:var(--text); border:1px solid rgba(255,255,255,0.12); border-radius:10px; padding:8px 10px; font-size:14px; }
     button.primary { background:linear-gradient(180deg,#0ea5e9,#06b6d4); border:none; color:white; font-weight:600; }
     button:disabled { opacity:.6; cursor:not-allowed; }
     .grid { margin-top:16px; display:grid; grid-template-columns:1fr; gap:16px; }
-    @media (min-width: 900px) { .grid { grid-template-columns:1fr 1fr; } }
-    .card {
-      background:linear-gradient(180deg,rgba(255,255,255,0.04),rgba(255,255,255,0.02));
-      border:1px solid rgba(255,255,255,0.08); border-radius:16px; padding:10px;
-      box-shadow: 0 10px 24px rgba(0,0,0,0.25), inset 0 1px 0 rgba(255,255,255,0.04);
-    }
+    @media (min-width:900px){ .grid { grid-template-columns:1fr 1fr; } }
+    .card { background:linear-gradient(180deg,rgba(255,255,255,0.04),rgba(255,255,255,0.02)); border:1px solid rgba(255,255,255,0.08); border-radius:16px; padding:10px; box-shadow:0 10px 24px rgba(0,0,0,0.25), inset 0 1px 0 rgba(255,255,255,0.04); }
     .meta { margin-top:8px; font-size:12px; color:var(--muted); }
     .footer { margin-top:16px; color:var(--muted); font-size:12px; }
     .warn { color:#fca5a5; }
@@ -62,17 +47,13 @@
     </div>
 
     <div class="grid">
-      <div class="card">
-        <div id="timePlot" style="width:100%;height:360px"></div>
-      </div>
-      <div class="card">
-        <div id="freqPlot" style="width:100%;height:360px"></div>
-      </div>
+      <div class="card"><div id="timePlot" style="width:100%;height:360px"></div></div>
+      <div class="card"><div id="freqPlot" style="width:100%;height:360px"></div></div>
     </div>
 
     <div class="footer">
-      Note: Runs fully in the browser using <code>Web Audio API</code> for microphone input and Plotly for plotting.  
-      Microphone access requires an HTTPS environment (e.g., GitHub Pages).  
+      Note: Runs fully in the browser using <code>Web Audio API</code> for microphone input and Plotly for plotting.<br/>
+      Microphone access requires an HTTPS environment (e.g., GitHub Pages).<br/>
       If you see no signal or spectrum, please check browser permissions or ensure your microphone (e.g., headset mic) is active.
     </div>
 
@@ -80,45 +61,62 @@
   </div>
 
 <script>
-  // ===== Helpers =====
-  function nextPow2(n){ return n<=1?1:1<< (Math.ceil(Math.log2(n))); }
-
   // ===== State =====
   let audioCtx, analyser, micSource, mediaStream;
   let running = false;
   let sampleRate = 48000;
+
   let ring = new Float32Array(48000 * 0.05); // default 50 ms
   let writePtr = 0, filled = false;
 
+  // ===== Ring buffer helpers =====
   function setWindowSec(sec){
-    const newN = Math.max(1, Math.floor(sec * sampleRate));
+    // 避免 0/NaN
+    const targetSec = Math.max(0.001, Number.isFinite(sec) ? sec : 0.05);
+    const newN = Math.max(1, Math.floor(targetSec * sampleRate));
+
+    // 取出旧数据末尾 newN 点
     const old = getOrderedBuffer();
-    const keep = old.slice(Math.max(0, old.length - newN));
+    const keepLen = Math.min(old.length, newN);
+    const keep = keepLen ? old.slice(old.length - keepLen) : null;
+
+    // 重新分配并拷贝到起始位置，避免偏移写入越界
     ring = new Float32Array(newN);
-    ring.set(keep, newN - keep.length);
-    // 修正：写指针 = 已保留数据长度；是否填满由 keep 长度决定
-    writePtr = keep.length;
-    filled = (keep.length === newN);
+    if (keep && keep.length) ring.set(keep, 0);
+
+    writePtr = keepLen;                 // 写指针等于已保留长度
+    filled  = (keepLen === newN);       // 是否已填满
   }
 
   function writeRing(data){
     const N = ring.length;
+    if (!N || !data || !data.length) return;
+
     let n = data.length;
     let end = writePtr + n;
-    if(end < N){
+
+    if (end <= N){
+      // 单段写入（注意 <=，恰好到末尾不越界）
       ring.set(data, writePtr);
-      writePtr = end;
+      writePtr = (end === N) ? 0 : end;
+      if (writePtr === 0) filled = true;
     } else {
+      // 分段写入
       const part1 = N - writePtr;
-      ring.set(data.subarray(0, part1), writePtr);
-      ring.set(data.subarray(part1), 0);
-      writePtr = end % N; filled = true;
+      if (part1 > 0) ring.set(data.subarray(0, part1), writePtr);
+      const rem = n - part1;
+      if (rem > 0) ring.set(data.subarray(part1, part1 + Math.min(rem, N)), 0);
+      writePtr = (end % N);
+      filled = true;
     }
   }
 
   function getOrderedBuffer(){
     const N = ring.length;
-    if(!filled){ return ring.slice(0, writePtr); }
+    if (!filled){
+      if (writePtr <= 0) return new Float32Array(0);
+      return ring.slice(0, writePtr);
+    }
     const out = new Float32Array(N);
     out.set(ring.subarray(writePtr));
     out.set(ring.subarray(0, writePtr), N - writePtr);
@@ -137,25 +135,19 @@
       xaxis:{ title:'Frequency (Hz)', zeroline:false, gridcolor:'rgba(255,255,255,0.1)' },
       yaxis:{ title:'Magnitude (dB)', zeroline:false, gridcolor:'rgba(255,255,255,0.1)' },
     };
-
     Plotly.newPlot('timePlot', [{x:[0,1], y:[0,0], mode:'lines'}], timeLayout, {displayModeBar:false});
     Plotly.newPlot('freqPlot', [{x:[0,1], y:[0,0], mode:'lines'}], freqLayout, {displayModeBar:false});
   }
 
-  function ensurePlotsReady(){
-    if(window.Plotly){ initPlots(); return; }
-    window.addEventListener('load', ()=>{ initPlots(); });
-  }
-
-  ensurePlotsReady();
+  if (window.Plotly) initPlots(); else window.addEventListener('load', initPlots);
 
   function updateTimePlot(){
     const y = getOrderedBuffer();
     const len = y.length;
-    if(len < 2) return;
+    if (len < 2) return;
     const x = new Float32Array(len);
-    for(let i=0;i<len;i++){ x[i] = (i - len) / sampleRate; } // [-sec, 0)
-    Plotly.update('timePlot', {x:[Array.from(x)], y:[Array.from(y)]});
+    for(let i=0;i<len;i++) x[i] = (i - len) / sampleRate; // [-sec,0)
+    Plotly.update('timePlot', { x:[Array.from(x)], y:[Array.from(y)] });
     const sec = len / sampleRate;
     Plotly.relayout('timePlot', {'xaxis.range':[ -sec, 0 ]});
   }
@@ -163,18 +155,16 @@
   function updateFreqPlot(){
     if(!analyser) return;
     const buf = new Float32Array(analyser.frequencyBinCount);
-    analyser.getFloatFrequencyData(buf); // dB values
+    analyser.getFloatFrequencyData(buf);
 
-    // X axis (frequency)
     const nyquist = sampleRate / 2;
     const freqs = new Float32Array(buf.length);
     const step = nyquist / (buf.length - 1);
     for(let i=0;i<freqs.length;i++) freqs[i] = i * step;
 
-    // Limit display to 6 kHz for readability
-    const limit = 6000; // Hz
-    let limitIdx = Math.min(buf.length, Math.floor(limit/step));
-    if(limitIdx < 8) limitIdx = buf.length;
+    const limit = 6000;
+    let limitIdx = Math.min(buf.length, Math.floor(limit / step));
+    if (limitIdx < 8) limitIdx = buf.length;
 
     Plotly.update('freqPlot', {
       x:[Array.from(freqs.slice(0, limitIdx))],
@@ -183,7 +173,7 @@
     Plotly.relayout('freqPlot', {'xaxis.range':[0, Math.min(nyquist, limit)]});
   }
 
-  // ===== Audio pipeline (RAF 拉流版) =====
+  // ===== Audio pipeline (RAF 拉流) =====
   async function start(){
     if(running) return;
     try{
@@ -192,16 +182,15 @@
       await audioCtx.resume();
       sampleRate = audioCtx.sampleRate;
 
-      // 窗口大小需基于当前采样率初始化
+      // 用新采样率重配时间窗
       const winSec = parseFloat(document.getElementById('windowSel').value);
       setWindowSec(winSec);
 
       micSource = audioCtx.createMediaStreamSource(mediaStream);
       analyser = audioCtx.createAnalyser();
-      analyser.fftSize = 16384;                // 大 FFT 以获得更细频率分辨率
-      analyser.smoothingTimeConstant = 0.6;    // 频谱平滑
+      analyser.fftSize = 16384;             // 可根据需要改为 8192/4096 降低延迟
+      analyser.smoothingTimeConstant = 0.6;
 
-      // 连接：只需 mic -> analyser
       micSource.connect(analyser);
 
       running = true;
@@ -209,11 +198,10 @@
       document.getElementById('btnStop').disabled = false;
       setStatus(`Sample Rate: ${sampleRate} Hz | FFT: ${analyser.fftSize} | Window: ${ring.length/sampleRate}s`);
 
-      // —— 动画循环：每帧拉取时域数据，写入 ring，并刷新两张图 —— 
       const loop = ()=>{
         if(!running) return;
 
-        // 拉取时域 PCM
+        // 读时域数据
         const td = new Float32Array(analyser.fftSize);
         if (analyser.getFloatTimeDomainData) {
           analyser.getFloatTimeDomainData(td);
@@ -229,6 +217,7 @@
         requestAnimationFrame(loop);
       };
       loop();
+
     }catch(err){
       setStatus('Microphone access failed: ' + err.message, true);
       console.error(err);
